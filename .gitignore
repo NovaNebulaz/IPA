@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Xcode / build output
+build/
+DerivedData/
+*.xcarchive
+
+# VS Code
+.vscode/
+
+# Logs
+*.log

@@ -1,0 +1,117 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Detect project/workspace and scheme
+        id: detect
+        shell: bash
+        run: |
+          set -e
+
+          WORKSPACE=$(find . -maxdepth 4 -name "*.xcworkspace" | head -n 1 || true)
+          PROJECT=$(find . -maxdepth 4 -name "*.xcodeproj" | head -n 1 || true)
+
+          if [ -n "$WORKSPACE" ]; then
+            echo "type=workspace" >> "$GITHUB_OUTPUT"
+            echo "file=$WORKSPACE" >> "$GITHUB_OUTPUT"
+            LIST_OUTPUT=$(xcodebuild -list -workspace "$WORKSPACE")
+          elif [ -n "$PROJECT" ]; then
+            echo "type=project" >> "$GITHUB_OUTPUT"
+            echo "file=$PROJECT" >> "$GITHUB_OUTPUT"
+            LIST_OUTPUT=$(xcodebuild -list -project "$PROJECT")
+          else
+            echo "No .xcworkspace or .xcodeproj found"
+            exit 1
+          fi
+
+          echo "$LIST_OUTPUT"
+
+          SCHEME=$(echo "$LIST_OUTPUT" | awk '
+            /Schemes:/ {flag=1; next}
+            flag && NF {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+              print
+              exit
+            }
+          ')
+
+          if [ -z "$SCHEME" ]; then
+            echo "No scheme found"
+            exit 1
+          fi
+
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Using scheme: $SCHEME"
+
+      - name: Install CocoaPods if Podfile exists
+        shell: bash
+        run: |
+          set -e
+          if [ -f "Podfile" ]; then
+            sudo gem install cocoapods
+            pod install
+          else
+            echo "No Podfile found"
+          fi
+
+      - name: Build app without signing
+        id: build
+        shell: bash
+        run: |
+          set -e
+
+          BUILD_DIR="$RUNNER_TEMP/build"
+          mkdir -p "$BUILD_DIR"
+
+          if [ "${{ steps.detect.outputs.type }}" = "workspace" ]; then
+            xcodebuild               -workspace "${{ steps.detect.outputs.file }}"               -scheme "${{ steps.detect.outputs.scheme }}"               -configuration Release               -sdk iphoneos               -destination generic/platform=iOS               -derivedDataPath "$BUILD_DIR/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               clean build
+          else
+            xcodebuild               -project "${{ steps.detect.outputs.file }}"               -scheme "${{ steps.detect.outputs.scheme }}"               -configuration Release               -sdk iphoneos               -destination generic/platform=iOS               -derivedDataPath "$BUILD_DIR/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               clean build
+          fi
+
+          APP_PATH=$(find "$BUILD_DIR/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found in Release-iphoneos"
+            find "$BUILD_DIR/DerivedData/Build/Products" -maxdepth 3 -type d | sort
+            exit 1
+          fi
+
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "Found app: $APP_PATH"
+
+      - name: Package unsigned IPA
+        id: package
+        shell: bash
+        run: |
+          set -e
+
+          PKG_DIR="$RUNNER_TEMP/ipa"
+          mkdir -p "$PKG_DIR/Payload"
+
+          cp -R "${{ steps.build.outputs.app_path }}" "$PKG_DIR/Payload/"
+
+          IPA_NAME="${{ steps.detect.outputs.scheme }}-unsigned.ipa"
+          cd "$PKG_DIR"
+          /usr/bin/zip -r "$RUNNER_TEMP/$IPA_NAME" Payload
+
+          echo "ipa_path=$RUNNER_TEMP/$IPA_NAME" >> "$GITHUB_OUTPUT"
+          ls -lah "$RUNNER_TEMP/$IPA_NAME"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: ${{ steps.package.outputs.ipa_path }}
